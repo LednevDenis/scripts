@@ -4,27 +4,43 @@ set -e
 
 SSH_CONFIG="/etc/ssh/sshd_config"
 
-echo "[*] Проверяю наличие SSH ключей у root..."
+echo "[*] Проверяем наличие SSH ключа у root..."
 if [ ! -f /root/.ssh/authorized_keys ]; then
-    echo "!!! У root нет authorized_keys. Добавь ключ, иначе потеряешь доступ."
+    echo "!!! У ROOT нет /root/.ssh/authorized_keys — без ключа ты потеряешь доступ!"
+    echo "Добавь ключ и запусти скрипт снова."
     exit 1
 fi
 
-echo "[*] Делаю бэкап sshd_config..."
-cp $SSH_CONFIG ${SSH_CONFIG}.bak_$(date +%F_%T)
+echo "[*] Делаем бэкап sshd_config..."
+cp "$SSH_CONFIG" "${SSH_CONFIG}.bak_$(date +%F_%T)"
 
-echo "[*] Включаю root login по ключам и отключаю парольный вход..."
+echo "[*] Проверяем ключи у остальных пользователей..."
+for user in $(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd); do
+    HOME_DIR=$(eval echo "~$user")
+    if [ ! -f "$HOME_DIR/.ssh/authorized_keys" ]; then
+        echo "!!! Внимание: у пользователя $user нет authorized_keys — он НЕ сможет войти после выключения паролей."
+    fi
+done
 
-# Разрешить root по ключу
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' $SSH_CONFIG
+echo "[*] Настраиваем SSH: только вход по ключу..."
 
-# Отключить пароли полностью
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' $SSH_CONFIG
+set_param() {
+    local param="$1"
+    local value="$2"
+    sed -i "s/^#\?\s*${param}.*/${param} ${value}/" "$SSH_CONFIG"
+    if ! grep -q "^${param} ${value}" "$SSH_CONFIG"; then
+        echo "${param} ${value}" >> "$SSH_CONFIG"
+    fi
+}
 
-# На всякий случай отключить ChallengeResponse
-sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' $SSH_CONFIG
+set_param "PermitRootLogin" "prohibit-password"
+set_param "PasswordAuthentication" "no"
+set_param "ChallengeResponseAuthentication" "no"
+set_param "PubkeyAuthentication" "yes"
+set_param "AuthenticationMethods" "publickey"
 
-echo "[*] Перезапускаю SSH..."
+echo "[*] Перезапускаем SSH..."
 systemctl restart sshd || systemctl restart ssh
 
-echo "[✓] Готово! Root входит только по ключам, пароли отключены."
+echo "[✓] Готово!"
+echo "Парольный вход полностью отключён."
